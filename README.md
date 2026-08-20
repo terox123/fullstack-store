@@ -1,93 +1,485 @@
-# Fullstack-store
+# Fullstack Store
 
+Fullstack интернет-магазин на Java 21 и React.
 
+Backend построен на Spring Boot и разделён на два сервиса: `Orders Service` и `Product Service`. Для авторизации используется Keycloak, данные хранятся в PostgreSQL. Все сервисы и инфраструктура запускаются через Docker Compose.
 
-## Getting started
+Проект также включает мониторинг и observability-стек на базе Prometheus, Grafana, Loki, Grafana Alloy и Tempo, а сборка и публикация Docker images автоматизированы через GitLab CI/CD.
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+## Архитектура
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
+```text
+                         ┌──────────────────┐
+                         │     Frontend     │
+                         │  React + Vite    │
+                         │      :5173       │
+                         └────────┬─────────┘
+                                  │
+                              REST / JWT
+                                  │
+                 ┌────────────────┴────────────────┐
+                 │                                 │
+        ┌────────▼────────┐               ┌────────▼────────┐
+        │  Orders Service │               │ Product Service │
+        │      :8080      │               │      :8081      │
+        └────────┬────────┘               └────────┬────────┘
+                 │                                 │
+        ┌────────▼────────┐               ┌────────▼────────┐
+        │    PostgreSQL   │               │    PostgreSQL   │
+        │      :5434      │               │      :5433      │
+        └─────────────────┘               └─────────────────┘
 
-## Add your files
-
-* [Create](https://docs.gitlab.com/user/project/repository/web_editor/#create-a-file) or [upload](https://docs.gitlab.com/user/project/repository/web_editor/#upload-a-file) files
-* [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
-
+                         ┌──────────────────┐
+                         │     Keycloak     │
+                         │      :8082       │
+                         └──────────────────┘
 ```
-cd existing_repo
-git remote add origin https://gitlab.com/Bulat1999/fullstack-store.git
-git branch -M main
-git push -uf origin main
+
+Frontend получает JWT через Keycloak и передаёт его backend-сервисам. Backend использует Spring Security и OAuth2 Resource Server для проверки токена.
+
+`Orders Service` отвечает за корзину и заказы, а `Product Service` — за каталог и остатки товаров.
+
+## Что реализовано
+
+### Авторизация
+
+Для управления пользователями используется Keycloak.
+
+Frontend подключается к realm `store` через client `store-frontend`. Backend-сервисы работают как OAuth2 Resource Server и проверяют JWT, выданный Keycloak.
+
+Используются:
+
+* OAuth 2.0
+* OpenID Connect
+* JWT
+* роли пользователей
+* Spring Security
+
+### Каталог
+
+Каталог находится в `Product Service`.
+
+Пользователь может получить список товаров, найти нужный товар и открыть его подробную информацию. Для товара доступны цена, рейтинг и текущее количество на складе.
+
+`Product Service` также отвечает за изменение остатков.
+
+### Корзина
+
+Корзина реализована в `Orders Service` и привязана к авторизованному пользователю.
+
+Поддерживаются добавление товара, изменение количества и удаление позиции. На странице корзины отображаются стоимость товаров, доставка и итоговая сумма.
+
+### Заказы
+
+Оформление заказа также выполняется через `Orders Service`.
+
+При создании заказа сервис:
+
+1. проверяет наличие товаров;
+2. рассчитывает стоимость позиций;
+3. рассчитывает доставку;
+4. сохраняет данные заказа;
+5. уменьшает остаток товара;
+6. очищает корзину.
+
+В текущей версии оплата не подключена к реальному платёжному провайдеру. Доступны варианты банковской карты, СБП и оплаты при получении, но сама транзакция имитируется.
+
+### Данные заказа
+
+В заказе сохраняются данные, необходимые для отображения истории покупки: состав заказа, количество, цена товара на момент покупки, стоимость позиций, доставка и итоговая сумма.
+
+Цена товара фиксируется при создании заказа. Поэтому изменение цены в каталоге не меняет стоимость уже оформленного заказа.
+
+## Backend
+
+### Orders Service
+
+**Port:** `8080`
+
+Сервис отвечает за:
+
+* корзину;
+* оформление заказов;
+* хранение заказов;
+* историю заказов;
+* проверку владельца заказа;
+* расчёт итоговой стоимости;
+* взаимодействие с `Product Service`.
+
+Основные endpoints:
+
+```http
+GET    /api/cart
+POST   /api/cart
+PUT    /api/cart/{productId}
+DELETE /api/cart/{productId}
+
+POST   /api/checkout
+
+GET    /api/orders
+GET    /api/orders/{id}
 ```
 
-## Integrate with your tools
+### Product Service
 
-* [Set up project integrations](https://gitlab.com/Bulat1999/fullstack-store/-/settings/integrations)
+**Port:** `8081`
 
-## Collaborate with your team
+Сервис отвечает за каталог товаров и остатки.
 
-* [Invite team members and collaborators](https://docs.gitlab.com/user/project/members/)
-* [Create a new merge request](https://docs.gitlab.com/user/project/merge_requests/creating_merge_requests/)
-* [Automatically close issues from merge requests](https://docs.gitlab.com/user/project/issues/managing_issues/#closing-issues-automatically)
-* [Enable merge request approvals](https://docs.gitlab.com/user/project/merge_requests/approvals/)
-* [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
+Основные endpoints:
 
-## Test and Deploy
+```http
+GET /api/products
+GET /api/products/{id}
+```
 
-Use the built-in continuous integration in GitLab.
+Также сервис предоставляет операции, необходимые для управления количеством товаров на складе.
 
-* [Get started with GitLab CI/CD](https://docs.gitlab.com/ci/quick_start/)
-* [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/user/application_security/sast/)
-* [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/topics/autodevops/requirements/)
-* [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/user/clusters/agent/)
-* [Set up protected environments](https://docs.gitlab.com/ci/environments/protected_environments/)
+## Frontend
 
-***
+Frontend написан на React и TypeScript с использованием Vite.
 
-# Editing this README
+**Port:** `5173`
 
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
+Основные страницы:
 
-## Suggestions for a good README
+* каталог;
+* корзина;
+* оформление заказа;
+* результат оформления заказа;
+* личный кабинет.
 
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
+В личном кабинете пользователь может посмотреть свои данные и историю заказов.
 
-## Name
-Choose a self-explaining name for your project.
+Для каждого заказа отображаются его статус, способ и статус оплаты, адрес доставки, состав заказа, количество товаров, цены и итоговая стоимость.
 
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
+## Хранение данных
 
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
+Каждый backend-сервис использует собственную PostgreSQL базу.
 
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
+### Orders PostgreSQL
 
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
+```text
+Database: orders
+Host port: 5434
+Container port: 5432
+```
 
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
+### Products PostgreSQL
 
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
+```text
+Database: products
+Host port: 5433
+Container port: 5432
+```
+
+Данные хранятся в Docker volumes, поэтому обычный перезапуск контейнеров не удаляет базы данных.
+
+## Keycloak
+
+Keycloak доступен по адресу:
+
+```text
+http://localhost:8082
+```
+
+Используемый realm:
+
+```text
+store
+```
+
+Frontend client:
+
+```text
+store-frontend
+```
+
+Frontend получает токен через Keycloak. Backend проверяет JWT перед обработкой защищённых запросов.
+
+## Observability
+
+Для мониторинга приложения и инфраструктуры используется отдельный observability-стек:
+
+```text
+Prometheus
+    │
+    ├── application metrics
+    ├── HTTP metrics
+    ├── JVM metrics
+    └── HikariCP metrics
+
+Loki
+    │
+    └── application / container logs
+
+Tempo
+    │
+    └── distributed traces
+
+        ↓
+
+     Grafana
+```
+
+### Prometheus
+
+```text
+http://localhost:9090
+```
+
+Spring Boot приложения публикуют метрики через:
+
+```text
+/actuator/prometheus
+```
+
+Собираются стандартные метрики Spring Boot, HTTP, JVM и HikariCP, а также бизнес-метрики приложения.
+
+### Loki
+
+```text
+http://localhost:3100
+```
+
+Loki используется для хранения и поиска логов приложений и Docker-контейнеров.
+
+### Grafana Alloy
+
+Alloy используется как collector.
+
+В текущей конфигурации он получает:
+
+* Docker logs;
+* OTLP traces.
+
+### Tempo
+
+```text
+http://localhost:3200
+```
+
+Tempo используется для хранения traces.
+
+OTLP endpoints:
+
+```text
+gRPC: 4317
+HTTP: 4318
+```
+
+### Grafana
+
+```text
+http://localhost:3000
+```
+
+В Grafana подключены:
+
+* Prometheus;
+* Loki;
+* Tempo.
+
+Dashboard проекта загружается автоматически при запуске инфраструктуры.
+
+## Структура проекта
+
+```text
+fullstack-store/
+│
+├── backend/
+│   └── ...
+│
+├── product-service/
+│   └── ...
+│
+├── frontend/
+│   └── ...
+│
+├── infra/
+│   ├── alloy/
+│   ├── grafana/
+│   ├── keycloak/
+│   ├── loki/
+│   ├── prometheus/
+│   └── tempo/
+│
+├── docker-compose.yml
+├── .gitignore
+├── .gitlab-ci.yml
+└── README.md
+```
+
+## Запуск
+
+### Требования
+
+Перед запуском должны быть установлены:
+
+* Docker;
+* Docker Compose;
+* Java 21;
+* Maven;
+* Node.js;
+* npm.
+
+### Запуск через Docker Compose
+
+```bash
+docker compose up -d --build
+```
+
+Проверить состояние контейнеров:
+
+```bash
+docker compose ps
+```
+
+Посмотреть логи:
+
+```bash
+docker compose logs -f orders-service
+```
+
+Остановить проект:
+
+```bash
+docker compose down
+```
+
+Перезапустить отдельный сервис:
+
+```bash
+docker compose restart orders-service
+```
+
+После изменения frontend можно пересобрать только его:
+
+```bash
+docker compose up -d --build frontend
+```
+
+## Локальная разработка
+
+Backend-сервисы можно собрать и проверить отдельно.
+
+### Orders Service
+
+```bash
+cd backend
+mvn test
+```
+
+### Product Service
+
+```bash
+cd product-service
+mvn test
+```
+
+### Frontend
+
+```bash
+cd frontend
+npm install
+npm run build
+```
+
+## CI/CD
+
+Для CI/CD используется GitLab CI/CD.
+
+Pipeline выполняет следующие этапы:
+
+1. запуск backend-тестов;
+2. проверка сборки frontend;
+3. сборка Docker images;
+4. публикация images в GitLab Container Registry.
+
+Используются три основных image:
+
+```text
+orders-service
+product-service
+frontend
+```
+
+Для images используются два типа тегов:
+
+```text
+<commit-sha>
+latest
+```
+
+`latest` используется для основной ветки, а SHA позволяет однозначно определить версию конкретной сборки.
+
+Развёртывание в Kubernetes пока не включено в pipeline.
+
+## Безопасность
+
+Конфигурационные файлы с секретами не должны попадать в Git.
+
+В `.gitignore` исключены:
+
+```text
+application.yml
+application.yaml
+application-*.yml
+application-*.yaml
+realm.json
+.env
+```
+
+Секреты, необходимые CI/CD, должны храниться в GitLab CI/CD Variables.
+
+## Технологии
+
+### Backend
+
+* Java 21
+* Spring Boot
+* Spring MVC
+* Spring Data JPA
+* Hibernate
+* Spring Security
+* OAuth2 Resource Server
+* PostgreSQL
+* Maven
+
+### Frontend
+
+* React
+* TypeScript
+* Vite
+
+### Infrastructure
+
+* Docker
+* Docker Compose
+* Keycloak
+* Prometheus
+* Grafana
+* Loki
+* Grafana Alloy
+* Tempo
+
+### CI/CD
+
+* GitLab CI/CD
+* GitLab Container Registry
 
 ## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
 
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
+Следующие изменения планируется добавить отдельно:
 
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
-
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
-
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
-
-## License
-For open source projects, say how it is licensed.
-
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+* Kubernetes;
+* Helm;
+* Kubernetes Secrets;
+* API Gateway;
+* Kafka;
+* асинхронное взаимодействие между сервисами;
+* интеграцию с реальным платёжным провайдером;
+* уведомления о заказах;
+* Grafana Alerts;
+* горизонтальное масштабирование;
+* production deployment.
