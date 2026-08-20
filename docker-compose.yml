@@ -1,0 +1,174 @@
+services:
+  postgres-orders:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: orders
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports: ["5434:5432"]
+    volumes: [orders-data:/var/lib/postgresql/data]
+
+  postgres-products:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: products
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports: ["5433:5432"]
+    volumes: [products-data:/var/lib/postgresql/data]
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.3
+
+    command:
+      - start-dev
+      - --import-realm
+      - --hostname=http://localhost:8082
+      - --hostname-backchannel-dynamic=true
+
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+
+    ports:
+      - "8082:8080"
+
+    volumes:
+      - ./infra/keycloak:/opt/keycloak/data/import
+
+
+  frontend:
+    build: ./frontend
+
+    depends_on:
+      - orders-service
+      - product-service
+
+    ports:
+      - "5173:5173"
+
+
+  orders-service:
+    build: ./backend
+
+    environment:
+
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-orders:5432/orders
+
+      SPRING_DATASOURCE_USERNAME: postgres
+
+      SPRING_DATASOURCE_PASSWORD: postgres
+
+      PRODUCT_SERVICE_URL: http://product-service:8081
+
+      KEYCLOAK_TOKEN_URL: http://keycloak:8080/realms/store/protocol/openid-connect/token
+
+      SERVICE_CLIENT_ID: orders-service
+
+      SERVICE_CLIENT_SECRET: orders-service-secret
+
+      SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUER_URI: http://localhost:8082/realms/store
+
+      SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_JWK_SET_URI: http://keycloak:8080/realms/store/protocol/openid-connect/certs
+
+    depends_on:
+      - postgres-orders
+      - keycloak
+      - product-service
+
+    ports:
+      - "8080:8080"
+
+  product-service:
+    build: ./product-service
+
+    environment:
+
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-products:5432/products
+
+      SPRING_DATASOURCE_USERNAME: postgres
+
+      SPRING_DATASOURCE_PASSWORD: postgres
+
+      SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUER_URI: http://localhost:8082/realms/store
+
+      SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_JWK_SET_URI: http://keycloak:8080/realms/store/protocol/openid-connect/certs
+
+    depends_on:
+      - postgres-products
+      - keycloak
+
+    ports:
+      - "8081:8081"
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    volumes: [./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro]
+    ports: ["9090:9090"]
+    depends_on: [orders-service, product-service]
+
+  loki:
+    image: grafana/loki:3.5.3
+    command:
+      - -config.file=/etc/loki/config.yml
+    volumes:
+      - ./infra/loki/config.yml:/etc/loki/config.yml:ro
+      - loki-data:/loki
+    ports:
+      - "3100:3100"
+
+  alloy:
+    image: grafana/alloy:v1.10.2
+    command:
+      - run
+      - /etc/alloy/config.alloy
+    volumes:
+      - ./infra/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      - loki
+      - tempo
+
+  tempo:
+    image: grafana/tempo:2.8.2
+
+    command:
+      - "-config.file=/etc/tempo/tempo.yml"
+
+    volumes:
+      - ./infra/tempo/tempo.yml:/etc/tempo/tempo.yml:ro
+      - tempo-data:/var/tempo
+
+    ports:
+      - "3200:3200"
+      - "4317:4317"
+      - "4318:4318"
+
+
+
+  grafana:
+    image: grafana/grafana:12.1.1
+
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
+
+    ports:
+      - "3000:3000"
+
+    depends_on:
+      - prometheus
+      - loki
+      - tempo
+
+volumes:
+  orders-data:
+  products-data:
+  grafana-data:
+  loki-data:
+  tempo-data:
